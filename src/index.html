@@ -22,12 +22,21 @@
   .lede{color:var(--muted);font-size:14px;margin:0}
   .card{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);
     border-radius:18px;padding:18px}
-  .warn{background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:14px;padding:14px;
-    display:flex;flex-direction:column;gap:8px}
-  .warn .row{display:flex;gap:10px;align-items:flex-start}
+  .warn{background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:14px;padding:16px;
+    display:flex;flex-direction:column;gap:14px}
+  .warn .row{display:flex;gap:12px;align-items:flex-start}
   .warn b{color:var(--amber);font-size:13px}
   .warn span{color:#C9B489;font-size:12.5px}
-  .warn .dot{width:6px;height:6px;border-radius:3px;background:var(--amber);margin-top:6px;flex:none}
+  .warn .ico{width:20px;height:20px;color:var(--amber);flex:none;margin-top:1px}
+  .warn .ico svg{width:100%;height:100%;display:block;stroke:currentColor;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round;fill:none}
+  .step-badge{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .step-num{width:26px;height:26px;border-radius:50%;background:var(--green);color:var(--ink);
+    font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+  .step-title{font-size:16px;font-weight:600;color:var(--text);letter-spacing:-.01em}
+  .gasbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;
+    font-size:12.5px;color:var(--muted);line-height:1.55;margin-top:4px}
+  .gasbox b{color:var(--text);font-weight:600}
   label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
     font-weight:600;margin-bottom:8px}
   textarea,input{width:100%;background:#0B110E;border:1px solid var(--line);border-radius:12px;
@@ -85,12 +94,22 @@
   </div>
 
   <div class="warn">
-    <div class="row"><span class="dot"></span><div><b>Never share your key or phrase.</b> <span>Anyone who has it controls your funds. No support agent, website, or person ever needs it.</span></div></div>
-    <div class="row"><span class="dot"></span><div><b>Your key stays in this page.</b> <span>It is used only to sign, right here in your browser, and is never uploaded. The tool connects to the internet only to read your balances and broadcast your sweep — never to send your key. It is open source, so you can confirm that yourself.</span></div></div>
-    <div class="row"><span class="dot"></span><div><b>Download it, don't trust a link.</b> <span>Get this file from the official release and check its SHA-256 checksum, then open the saved file locally. A hosted page can be tampered with; a verified file cannot. Deriving your address works fully offline; reading balances and sweeping need a connection.</span></div></div>
+    <div class="row">
+      <span class="ico"><svg viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span>
+      <div><b>Never share your key or phrase.</b> <span>Anyone who has it controls your funds. No support agent, website, or person ever needs it.</span></div>
+    </div>
+    <div class="row">
+      <span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+      <div><b>Your key stays in this page.</b> <span>It is used only to sign, right here in your browser, and is never uploaded. The tool goes online only to read your balances and broadcast your sweep — never to send your key. It is open source, so you can confirm this yourself.</span></div>
+    </div>
+    <div class="row">
+      <span class="ico"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+      <div><b>Download it, then open your own copy.</b> <span>Get this file from the official release, check its SHA-256 checksum, and open the saved file from your computer. It opens in your browser like any page — that is expected; the point is that it is your verified copy running locally, not a live website a link could tamper with.</span></div>
+    </div>
   </div>
 
   <div class="card">
+    <div class="step-badge"><span class="step-num">1</span><span class="step-title">Paste your backup</span></div>
     <label for="backup">Your private key or recovery phrase</label>
     <textarea id="backup" placeholder="0x…  or  word1 word2 … word24" autocomplete="off" spellcheck="false"></textarea>
     <div class="modes">
@@ -99,7 +118,7 @@
       <span class="modenote">Only matters for a phrase. A private key is detected automatically.</span>
     </div>
     <details class="adv">
-      <summary>Advanced — custom RPC endpoints</summary>
+      <summary>Advanced — custom RPC endpoints &amp; passphrase</summary>
       <p class="modenote">One per line: <code>chain url</code> (name or id), e.g. <code>base https://mainnet.base.org</code>. Chains without an override use their public default. Point these at your own node so recovery outlives any provider.</p>
       <textarea id="rpcOverrides" placeholder="base https://your-node.example/rpc&#10;42161 https://your-arbitrum-node.example/rpc" autocomplete="off" spellcheck="false"></textarea>
       <p class="modenote" style="margin-top:14px">BIP-39 passphrase (the optional "25th word"). Leave blank unless you set one. Only applies to a standard seed phrase.</p>
@@ -112,7 +131,16 @@
   </div>
 
   <div id="results" class="hidden">
+    <div class="step-badge"><span class="step-num">2</span><span class="step-title">Review your accounts</span></div>
     <div id="accounts"></div>
+    <div class="card" style="margin-top:4px">
+      <div class="step-badge"><span class="step-num">3</span><span class="step-title">Sweep your funds</span></div>
+      <p class="modenote" style="font-size:12.5px;line-height:1.55">On any row that shows a balance, press <b style="color:var(--text)">Sweep</b>, paste a destination address you control, and confirm. The address is shown back to you before anything is sent.</p>
+      <div class="gasbox">
+        <b>How gas is paid.</b> Plain wallets pay the fee out of the funds being swept — nothing extra to do.
+        A smart account pays its own fee from its balance, but its <b>owner wallet</b> submits the transaction, so first send a little native gas to the owner address on that chain (it is reimbursed from the account).
+      </div>
+    </div>
   </div>
 
   <p class="foot">Pistachio recovery tool · open source · runs entirely in your browser</p>
