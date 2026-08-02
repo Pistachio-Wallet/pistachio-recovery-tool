@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pistachio recovery tool</title>
+<style>
+  :root{
+    --bg:#0E1512; --card:#17211B; --card2:#1E2A23;
+    --line:rgba(150,236,157,.14); --line2:rgba(150,236,157,.28);
+    --green:#96EC9D; --ink:#06120A; --text:#EAF3EC; --muted:#8A978F;
+    --amber:#EFC66B; --amber-bg:rgba(240,198,105,.08); --amber-line:rgba(240,198,105,.3);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(120% 80% at 50% -10%,#13201A,#0A0F0C 60%,#080B09);
+    min-height:100vh;color:var(--text);font-family:var(--sans);line-height:1.5;
+    padding:32px 16px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:20px}
+  h1{font-size:24px;font-weight:600;margin:0;letter-spacing:-.02em}
+  .lede{color:var(--muted);font-size:14px;margin:0}
+  .card{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);
+    border-radius:18px;padding:18px}
+  .warn{background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:14px;padding:14px;
+    display:flex;flex-direction:column;gap:8px}
+  .warn .row{display:flex;gap:10px;align-items:flex-start}
+  .warn b{color:var(--amber);font-size:13px}
+  .warn span{color:#C9B489;font-size:12.5px}
+  .warn .dot{width:6px;height:6px;border-radius:3px;background:var(--amber);margin-top:6px;flex:none}
+  label{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+    font-weight:600;margin-bottom:8px}
+  textarea,input{width:100%;background:#0B110E;border:1px solid var(--line);border-radius:12px;
+    color:var(--text);font-family:var(--mono);font-size:14px;padding:12px;resize:vertical}
+  textarea{min-height:84px}
+  button{border:0;border-radius:12px;padding:12px 18px;font-family:var(--sans);font-size:14px;
+    font-weight:600;cursor:pointer;background:var(--green);color:var(--ink)}
+  button.ghost{background:var(--card2);color:var(--text);border:1px solid var(--line)}
+  #status{font-size:13px;color:var(--muted);min-height:18px}
+  #status.ok{color:var(--green)} #status.err{color:#F0997B} #status.warn{color:var(--amber)}
+  td.unreach{color:var(--amber)}
+  .modes{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+  .radio{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);
+    text-transform:none;letter-spacing:0;font-weight:400;margin:0}
+  .radio input{width:auto}
+  .modenote{font-size:11.5px;color:var(--muted)}
+  .acct{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:16px}
+  .acct-head{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+  .acct-head .k{font-size:13px;font-weight:600;color:var(--text)}
+  .acct-head .hint{font-size:11.5px;color:var(--muted)}
+  .acct .v{font-family:var(--mono);font-size:13px;word-break:break-all;margin-bottom:10px}
+  .acct .v.big{color:var(--green)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    padding:8px 6px;border-bottom:1px solid var(--line)}
+  td{padding:9px 6px;border-bottom:1px solid var(--line)}
+  td.num{font-family:var(--mono);text-align:right}
+  .sweep-btn{padding:6px 12px;font-size:12px}
+  .hidden{display:none!important}
+  .modal{position:fixed;inset:0;background:rgba(4,8,6,.7);display:flex;align-items:center;
+    justify-content:center;padding:16px}
+  .modal .card{max-width:460px;width:100%;display:flex;flex-direction:column;gap:12px}
+  code{font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--green)}
+  .foot{color:var(--muted);font-size:11.5px;text-align:center}
+  .sweepResult.ok{color:var(--green)} .sweepResult.err{color:#F0997B}
+  .note{font-size:12px;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-line);
+    border-radius:10px;padding:10px}
+  .adv{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+  .adv summary{font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+  .adv .modenote{margin:10px 0 8px} .adv code{color:var(--green)}
+  .confirm{font-size:13px;color:var(--text);background:var(--card2);border:1px solid var(--line2);
+    border-radius:10px;padding:12px;line-height:1.5}
+  .empties summary{font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none}
+  .empty-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line);
+    font-size:12px;margin-top:8px}
+  .empty-label{color:var(--muted)} .empty-addr{font-family:var(--mono);color:var(--text);word-break:break-all}
+  #selfHash{font-family:var(--mono);font-size:10.5px;word-break:break-all;margin-top:-12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Pistachio recovery tool</h1>
+    <p class="lede">Reach your funds with only your backup — no Pistachio account, app, or servers required.</p>
+  </div>
+
+  <div class="warn">
+    <div class="row"><span class="dot"></span><div><b>Never share your key or phrase.</b> <span>Anyone who has it controls your funds. No support agent, website, or person ever needs it.</span></div></div>
+    <div class="row"><span class="dot"></span><div><b>Your key stays in this page.</b> <span>It is used only to sign, right here in your browser, and is never uploaded. The tool connects to the internet only to read your balances and broadcast your sweep — never to send your key. It is open source, so you can confirm that yourself.</span></div></div>
+    <div class="row"><span class="dot"></span><div><b>Download it, don't trust a link.</b> <span>Get this file from the official release and check its SHA-256 checksum, then open the saved file locally. A hosted page can be tampered with; a verified file cannot. Deriving your address works fully offline; reading balances and sweeping need a connection.</span></div></div>
+  </div>
+
+  <div class="card">
+    <label for="backup">Your private key or recovery phrase</label>
+    <textarea id="backup" placeholder="0x…  or  word1 word2 … word24" autocomplete="off" spellcheck="false"></textarea>
+    <div class="modes">
+      <label class="radio"><input type="radio" name="mode" value="pistachio" checked /> Pistachio recovery phrase</label>
+      <label class="radio"><input type="radio" name="mode" value="standard" /> Standard seed phrase (MetaMask, Ledger, …)</label>
+      <span class="modenote">Only matters for a phrase. A private key is detected automatically.</span>
+    </div>
+    <details class="adv">
+      <summary>Advanced — custom RPC endpoints</summary>
+      <p class="modenote">One per line: <code>chain url</code> (name or id), e.g. <code>base https://mainnet.base.org</code>. Chains without an override use their public default. Point these at your own node so recovery outlives any provider.</p>
+      <textarea id="rpcOverrides" placeholder="base https://your-node.example/rpc&#10;42161 https://your-arbitrum-node.example/rpc" autocomplete="off" spellcheck="false"></textarea>
+    </details>
+    <div style="display:flex;gap:12px;align-items:center;margin-top:14px">
+      <button id="recover">Recover my account</button>
+      <span id="status"></span>
+    </div>
+  </div>
+
+  <div id="results" class="hidden">
+    <div id="accounts"></div>
+  </div>
+
+  <p class="foot">Pistachio recovery tool · open source · runs entirely in your browser</p>
+  <p class="foot" id="selfHash"></p>
+</div>
+
+<div id="sweepModal" class="modal hidden">
+  <div class="card">
+    <h1 style="font-size:18px">Sweep <span id="sweepChainName"></span></h1>
+    <div><label for="destination">Send to</label><input id="destination" placeholder="0x… destination address" autocomplete="off" spellcheck="false" /></div>
+    <div id="gasNote" class="note">Self-submitted to the public EntryPoint — no bundler. Fund the owner wallet with a little native gas on this chain first (it is reimbursed from the account).</div>
+    <div id="sweepConfirm" class="confirm hidden"></div>
+    <div style="display:flex;gap:12px"><button id="doSweep">Review sweep</button><button id="closeSweep" class="ghost">Cancel</button></div>
+    <div id="sweepResult" class="sweepResult" style="font-size:12.5px"></div>
+  </div>
+</div>
+
+<script src="./bundle.js"></script>
+</body>
+</html>
