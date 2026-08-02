@@ -50,7 +50,11 @@ async function onRecover() {
     $("accounts").innerHTML = ""
     try {
         rpcOverrides = parseRpcOverrides($("rpcOverrides").value)
-        candidates = await deriveCandidates($("backup").value, phraseMode())
+        candidates = await deriveCandidates(
+            $("backup").value,
+            phraseMode(),
+            $("passphrase") ? $("passphrase").value : "",
+        )
         // Keys are now captured in `candidates`; wipe the plaintext DOM copy so a
         // later script foothold can't read it back off the textarea.
         $("backup").value = ""
@@ -76,13 +80,15 @@ function renderCandidates(balancesMap) {
     }
     if (empties.length) renderEmptySummary(empties)
 
-    // All candidates share the same per-chain reachability (one client per chain),
-    // so count unreachable chains from any candidate's rows.
-    const sample = balancesMap.get(candidates[0].address) || []
-    const unreachable = sample.filter((b) => !b.ok).length
-    if (unreachable > 0)
+    // Count unreachable chains across EVERY candidate (a per-address RPC failure on
+    // a later candidate must not be hidden behind the first candidate's success).
+    const unreachableChains = new Set()
+    for (const c of candidates)
+        for (const b of balancesMap.get(c.address) || [])
+            if (!b.ok) unreachableChains.add(b.chainId)
+    if (unreachableChains.size > 0)
         setStatus(
-            `Scan incomplete — ${unreachable} chain read(s) failed. Retry, or add a custom RPC under Advanced, before assuming a chain is empty.`,
+            `Scan incomplete — ${unreachableChains.size} chain(s) unreachable. Retry, or add a custom RPC under Advanced, before assuming a chain is empty.`,
             "warn",
         )
     else setStatus("Recovered. Any funds found are shown below.", "ok")
@@ -137,7 +143,7 @@ let sweepCtx = null
 let pendingConfirm = false
 
 function openSweep(candidate, balance) {
-    sweepCtx = { candidate, chain: CHAINS.find((c) => c.id === balance.chainId), balance }
+    sweepCtx = { candidate, chain: CHAINS.find((c) => c.id === balance.chainId), balance, reviewedDestination: null }
     pendingConfirm = false
     $("sweepChainName").textContent = balance.name
     $("destination").value = ""
@@ -160,15 +166,19 @@ async function onDoSweep() {
     }
     // Step 1: echo chain, amount, and checksummed destination for a second look
     // before the irreversible send (guards fat-fingers / clipboard hijacking).
-    if (!pendingConfirm) {
+    // Re-review whenever the address changed since it was last reviewed, so the
+    // broadcast can never target an address the confirmation didn't show.
+    if (!pendingConfirm || sweepCtx.reviewedDestination !== destination) {
         const { chain, balance } = sweepCtx
         $("sweepConfirm").textContent = `Send up to ${trim(balance.formatted)} ${chain.nativeCurrency.symbol} on ${chain.name} to ${checksumAddress(destination)} — this is irreversible.`
         show($("sweepConfirm"))
         $("doSweep").textContent = "Confirm & send"
         pendingConfirm = true
+        sweepCtx.reviewedDestination = destination
         return
     }
-    // Step 2: send.
+    // Step 2: send to the EXACT reviewed destination (not a fresh read).
+    const dest = sweepCtx.reviewedDestination
     result.className = ""
     result.textContent = "Sweeping…"
     $("doSweep").disabled = true
@@ -176,13 +186,14 @@ async function onDoSweep() {
         const { candidate, chain } = sweepCtx
         const r =
             candidate.kind === "smart"
-                ? await sweep({ privateKey: candidate.key, chain, destination, rpcOverrides })
-                : await sweepEoa({ privateKey: candidate.key, chain, destination, rpcOverrides })
+                ? await sweep({ privateKey: candidate.key, chain, destination: dest, rpcOverrides })
+                : await sweepEoa({ privateKey: candidate.key, chain, destination: dest, rpcOverrides })
         const sym = chain.nativeCurrency.symbol
         result.textContent = r.success
             ? `Swept ${r.swept} ${sym}. tx: `
             : `Submitted but the transfer did not succeed (it may need more gas for a contract destination). tx: `
         result.appendChild(el("code", null, r.txHash || ""))
+        if (r.note) result.appendChild(el("div", "modenote", r.note))
         if (r.success && r.strandedDeposit && Number(r.strandedDeposit) > 0)
             result.appendChild(
                 el(

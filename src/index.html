@@ -102,6 +102,8 @@
       <summary>Advanced — custom RPC endpoints</summary>
       <p class="modenote">One per line: <code>chain url</code> (name or id), e.g. <code>base https://mainnet.base.org</code>. Chains without an override use their public default. Point these at your own node so recovery outlives any provider.</p>
       <textarea id="rpcOverrides" placeholder="base https://your-node.example/rpc&#10;42161 https://your-arbitrum-node.example/rpc" autocomplete="off" spellcheck="false"></textarea>
+      <p class="modenote" style="margin-top:14px">BIP-39 passphrase (the optional "25th word"). Leave blank unless you set one. Only applies to a standard seed phrase.</p>
+      <input id="passphrase" type="password" placeholder="BIP-39 passphrase (optional)" autocomplete="off" spellcheck="false" />
     </details>
     <div style="display:flex;gap:12px;align-items:center;margin-top:14px">
       <button id="recover">Recover my account</button>

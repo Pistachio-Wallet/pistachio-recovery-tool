@@ -8,6 +8,7 @@
     "bundle": "npm run build && node bundle-single.mjs"
   },
   "dependencies": {
+    "@scure/bip32": "1.7.0",
     "@scure/bip39": "1.6.0",
     "@zerodev/ecdsa-validator": "5.4.9",
     "@zerodev/sdk": "5.5.10",

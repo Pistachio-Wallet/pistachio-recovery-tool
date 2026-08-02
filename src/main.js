@@ -9,9 +9,11 @@
 import {
     entropyToMnemonic,
     mnemonicToEntropy,
+    mnemonicToSeedSync,
     validateMnemonic,
 } from "@scure/bip39"
 import { wordlist } from "@scure/bip39/wordlists/english"
+import { HDKey } from "@scure/bip32"
 import {
     http,
     createPublicClient,
@@ -22,17 +24,18 @@ import {
     formatEther,
     isAddress,
     getAddress,
+    zeroAddress,
     parseEventLogs,
 } from "viem"
 import { publicActionsL2 } from "viem/op-stack"
-import { privateKeyToAccount, mnemonicToAccount } from "viem/accounts"
+import { privateKeyToAccount } from "viem/accounts"
 import {
     mainnet,
     optimism,
     polygon,
     arbitrum,
     base,
-    plume,
+    plumeMainnet,
     mantle,
     scroll,
     opBNB,
@@ -64,9 +67,10 @@ import {
     entryPoint07Abi,
     toPackedUserOperation,
 } from "viem/account-abstraction"
+import { getUserOperationHash } from "viem/account-abstraction"
 import { createKernelAccount } from "@zerodev/sdk"
 import { KERNEL_V3_0, getEntryPoint } from "@zerodev/sdk/constants"
-import { signerToEcdsaValidator } from "@zerodev/ecdsa-validator"
+import { signerToEcdsaValidator, getKernelAddressFromECDSA } from "@zerodev/ecdsa-validator"
 
 // ---- codec (byte-for-byte mirror of the app) --------------------------------
 const HEX_64 = /^[0-9a-f]{64}$/
@@ -98,23 +102,31 @@ function pistachioPhraseToPrivateKey(phrase) {
     return normalizePrivateKey(bytesToHex(mnemonicToEntropy(p, wordlist)))
 }
 
+// BIP-32 HD key at an explicit derivation path, honoring an optional BIP-39
+// passphrase (the "25th word"). Used for standard (MetaMask/Ledger) seeds.
+function hdKeyAtPath(phrase, path, passphrase = "") {
+    const seed = mnemonicToSeedSync(phrase, passphrase || "")
+    const node = HDKey.fromMasterSeed(seed).derive(path)
+    return normalizePrivateKey(bytesToHex(node.privateKey))
+}
+
 // STANDARD BIP-39 seed (MetaMask, Ledger, …): the words seed BIP-32 HD
 // derivation at the Ethereum path m/44'/60'/0'/0/<index>. Supports 12–24 words.
-export function standardSeedToPrivateKey(phrase, addressIndex = 0) {
+export function standardSeedToPrivateKey(phrase, addressIndex = 0, passphrase = "") {
     const p = normalizePhrase(phrase)
     if (![12, 15, 18, 21, 24].includes(p.split(" ").length))
         throw new Error("A seed phrase is 12, 15, 18, 21, or 24 words")
     if (!validateMnemonic(p, wordlist))
         throw new Error("Invalid seed phrase — check the words and their order")
-    const hd = mnemonicToAccount(p, { addressIndex })
-    return normalizePrivateKey(bytesToHex(hd.getHdKey().privateKey))
+    return hdKeyAtPath(p, `m/44'/60'/0'/0/${addressIndex}`, passphrase)
 }
 
 // phraseMode: "pistachio" (default) or "standard". Ignored for a raw key.
+// A backup with ANY whitespace (space, tab, newline) is treated as a phrase.
 export function inputToPrivateKey(input, phraseMode = "pistachio") {
     const trimmed = String(input).trim()
     if (!trimmed) throw new Error("Enter your private key or recovery phrase")
-    if (!trimmed.includes(" ")) return normalizePrivateKey(trimmed)
+    if (!/\s/.test(trimmed)) return normalizePrivateKey(trimmed)
     return phraseMode === "standard"
         ? standardSeedToPrivateKey(trimmed)
         : pistachioPhraseToPrivateKey(trimmed)
@@ -128,7 +140,7 @@ export { normalizePrivateKey }
 // defaults (or the chain's own public endpoint) — no keyed/Pistachio infra, so
 // the tool keeps working after we're gone.
 export const CHAINS = [
-    mainnet, optimism, polygon, arbitrum, base, plume, mantle, scroll,
+    mainnet, optimism, polygon, arbitrum, base, plumeMainnet, mantle, scroll,
     opBNB, polygonZkEvm, ink, bsc, hyperliquid, celo, linea, monad,
     megaeth, robinhood,
 ]
@@ -170,19 +182,22 @@ export function checksumAddress(a) {
     return isAddress(a) ? getAddress(a) : a
 }
 
+// A public client used only to satisfy the derivation API. For EntryPoint v0.7 the
+// Kernel init-code hash is computed locally, so this client never makes a network
+// call during address derivation (verified: derivation works with an unreachable
+// RPC). Kernel discovery is therefore fully offline and never depends on any RPC.
+const derivationClient = createPublicClient({ chain: base, transport: http() })
+
 // The Kernel v3.0 smart-account address for an owner key (counterfactual, same on
-// every EVM chain). Any chain works for derivation.
+// every EVM chain), computed OFFLINE via CREATE2 — no RPC, no Base dependency.
 async function kernelAddress(privateKey) {
-    const client = createPublicClient({ chain: base, transport: http() })
-    const signer = privateKeyToAccount(privateKey)
-    const ecdsaValidator = await signerToEcdsaValidator(client, {
-        entryPoint: ep, kernelVersion: KERNEL_V3_0, signer,
+    return getKernelAddressFromECDSA({
+        publicClient: derivationClient,
+        eoaAddress: privateKeyToAccount(privateKey).address,
+        index: 0n,
+        entryPoint: ep,
+        kernelVersion: KERNEL_V3_0,
     })
-    const account = await createKernelAccount(client, {
-        entryPoint: ep, kernelVersion: KERNEL_V3_0,
-        plugins: { sudo: ecdsaValidator }, index: 0n,
-    })
-    return account.address
 }
 
 // Kept for tests/back-compat: owner EOA + its Kernel address for one key.
@@ -207,18 +222,30 @@ const HD_ACCOUNTS = 5 // scan account indices 0..4 on each standard path
 //    (m/44'/60'/i'/0/0). We enumerate both paths for accounts 0..4.
 // `phraseMode` only decides which candidates are marked `primary` (always shown);
 // every candidate is scanned regardless, so a wrong mode can never hide funds.
-export async function deriveCandidates(input, phraseMode = "pistachio") {
+export async function deriveCandidates(input, phraseMode = "pistachio", passphrase = "") {
     const trimmed = String(input).trim()
     if (!trimmed) throw new Error("Enter your private key or recovery phrase")
 
     const out = []
-    const addEoa = (key, label, hint, primary = false) =>
-        out.push({ key, address: privateKeyToAccount(key).address, kind: "eoa", label, hint, primary })
-    const addKernel = async (key, label, hint, primary = false) =>
-        out.push({ key, address: await kernelAddress(key), kind: "smart", label, hint, primary })
+    const seen = new Set()
+    const addEoa = (key, label, hint, primary = false) => {
+        const address = privateKeyToAccount(key).address
+        const id = `eoa:${address.toLowerCase()}`
+        if (seen.has(id)) return
+        seen.add(id)
+        out.push({ key, address, kind: "eoa", label, hint, primary })
+    }
+    const addKernel = async (key, label, hint, primary = false) => {
+        const address = await kernelAddress(key)
+        const id = `smart:${address.toLowerCase()}`
+        if (seen.has(id)) return
+        seen.add(id)
+        out.push({ key, address, kind: "smart", label, hint, primary })
+    }
 
-    // Raw private key: an owner EOA and its Kernel smart account.
-    if (!trimmed.includes(" ")) {
+    // Raw private key: an owner EOA and its Kernel smart account. (Any whitespace
+    // means "phrase"; a bare key has none.)
+    if (!/\s/.test(trimmed)) {
         const key = normalizePrivateKey(trimmed)
         addEoa(key, "Owner wallet (EOA)", "Plain wallets keep funds here", true)
         await addKernel(key, "Smart account (Kernel)", "Pistachio / ZeroDev accounts keep funds here", true)
@@ -232,9 +259,9 @@ export async function deriveCandidates(input, phraseMode = "pistachio") {
     if (!validateMnemonic(p, wordlist))
         throw new Error("Invalid recovery phrase — check the words and their order")
 
-    // Pistachio interpretation (24 words only — the words ARE the key). If the
-    // entropy isn't a valid secp256k1 scalar this phrase simply can't be a
-    // Pistachio backup, so skip it rather than aborting the standard derivation.
+    // Pistachio interpretation (24 words only — the words ARE the key; a BIP-39
+    // passphrase does not apply). If the entropy isn't a valid secp256k1 scalar
+    // this phrase can't be a Pistachio backup, so skip it rather than aborting.
     if (words === 24) {
         try {
             const pk = normalizePrivateKey(bytesToHex(mnemonicToEntropy(p, wordlist)))
@@ -246,22 +273,20 @@ export async function deriveCandidates(input, phraseMode = "pistachio") {
         }
     }
 
-    // Standard BIP-39 HD interpretation (MetaMask + Ledger paths, accounts 0..4).
+    // Standard BIP-39 HD interpretation (MetaMask + Ledger paths, accounts 0..4),
+    // honoring the optional BIP-39 passphrase. i=0 on both paths is the same key
+    // (deduped). The first account also gets its Kernel candidate, so a smart
+    // account owned by the seed's main EOA is discoverable too.
     const stdPrimary = phraseMode === "standard" || words !== 24
-    const seen = new Set(out.map((c) => `${c.kind}:${c.address.toLowerCase()}`))
+    const acct0Key = hdKeyAtPath(p, "m/44'/60'/0'/0/0", passphrase)
     for (let i = 0; i < HD_ACCOUNTS; i++) {
-        const mm = mnemonicToAccount(p, { addressIndex: i }) // m/44'/60'/0'/0/i
-        const lg = mnemonicToAccount(p, { accountIndex: i }) // m/44'/60'/i'/0/0
-        const push = (acct, label, hint, primary) => {
-            const key = normalizePrivateKey(bytesToHex(acct.getHdKey().privateKey))
-            const id = `eoa:${privateKeyToAccount(key).address.toLowerCase()}`
-            if (seen.has(id)) return // i=0 MetaMask and Ledger paths coincide
-            seen.add(id)
-            addEoa(key, label, hint, primary)
-        }
-        push(mm, `Standard seed · account ${i}`, `m/44'/60'/0'/0/${i}`, stdPrimary && i === 0)
-        push(lg, `Ledger · account ${i}`, `m/44'/60'/${i}'/0/0`, false)
+        addEoa(hdKeyAtPath(p, `m/44'/60'/0'/0/${i}`, passphrase),
+            `Standard seed · account ${i}`, `m/44'/60'/0'/0/${i}`, stdPrimary && i === 0)
+        addEoa(hdKeyAtPath(p, `m/44'/60'/${i}'/0/0`, passphrase),
+            `Ledger · account ${i}`, `m/44'/60'/${i}'/0/0`, false)
     }
+    await addKernel(acct0Key, "Standard seed · account 0 · Kernel",
+        "Smart account owned by your first account", false)
     return out
 }
 
@@ -271,7 +296,9 @@ export async function deriveCandidates(input, phraseMode = "pistachio") {
 // what actually keeps this working after every default provider. http(undefined)
 // falls back to the chain's built-in default, so an absent override is harmless.
 function rpc(chain, rpcOverrides = {}) {
-    return http(rpcOverrides[chain.id])
+    // Fail fast: a dead endpoint shouldn't stall the whole scan behind the default
+    // multi-retry/long-timeout behavior. One quick retry, short timeout.
+    return http(rpcOverrides[chain.id], { timeout: 8_000, retryCount: 1 })
 }
 
 // Scan native balance of one address across all chains, in parallel. Never
@@ -308,6 +335,14 @@ export async function scanCandidates(addresses, rpcOverrides = {}) {
             let wei
             try {
                 const client = createPublicClient({ chain, transport: rpc(chain, rpcOverrides) })
+                // If the user supplied a custom RPC for this chain, verify it really
+                // serves this chain id before trusting its balances — otherwise a
+                // wrong-network endpoint would mislabel balances (and a bogus Sweep).
+                if (rpcOverrides[chain.id]) {
+                    const cid = await client.getChainId()
+                    if (cid !== chain.id)
+                        throw new Error(`Custom RPC for ${chain.name} reports chain ${cid}`)
+                }
                 wei = await Promise.all(
                     addresses.map((a) =>
                         client.getBalance({ address: a }).then(
@@ -348,22 +383,32 @@ export async function sweepEoa({ privateKey, chain, destination, rpcOverrides = 
     const walletClient = createWalletClient({ account, chain, transport: rpc(chain, rpcOverrides) })
     const balance = await publicClient.getBalance({ address: account.address })
 
-    // Fees: EIP-1559 where supported, legacy gasPrice otherwise.
-    let maxFeePerGas, maxPriorityFeePerGas
+    // Fees: EIP-1559 where supported, LEGACY (type-0, gasPrice) otherwise — the
+    // fallback must actually sign a legacy tx, not a type-2 tx with gasPrice copied
+    // into the 1559 fields (that gets rejected by legacy-only nodes).
+    let feePerGas, feeFields
     try {
         const e = await publicClient.estimateFeesPerGas()
-        maxFeePerGas = e.maxFeePerGas
-        maxPriorityFeePerGas = e.maxPriorityFeePerGas
+        feePerGas = e.maxFeePerGas
+        feeFields = { maxFeePerGas: e.maxFeePerGas, maxPriorityFeePerGas: e.maxPriorityFeePerGas }
     } catch {
-        maxFeePerGas = maxPriorityFeePerGas = await publicClient.getGasPrice()
+        const gp = await publicClient.getGasPrice()
+        feePerGas = gp
+        feeFields = { gasPrice: gp }
     }
 
-    const gas = 21_000n
-    const l2Cost = gas * maxFeePerGas
-    // On OP-stack L2s (Optimism/Base/opBNB/Ink) the sender ALSO pays an L1 data
-    // fee that isn't in l2Cost. Estimate it via the L1 gas oracle; on non-OP
-    // chains the call throws and we treat it as 0. Reserve it (with variance
-    // headroom) so the sweep doesn't fail for insufficient funds on those chains.
+    // Destination-aware gas: a plain EOA transfer is 21k, but a contract wallet
+    // receiver needs more — a fixed 21k would revert and burn the fee. Estimate,
+    // with headroom, and fall back to 21k if estimation isn't available.
+    let gas
+    try {
+        gas = ((await publicClient.estimateGas({ account, to: destination, value: 1n })) * 12n) / 10n
+    } catch {
+        gas = 21_000n
+    }
+    const l2Cost = gas * feePerGas
+    // On OP-stack L2s the sender ALSO pays an L1 data fee not in l2Cost. Estimate
+    // it via the L1 gas oracle (throws → 0 on non-OP chains) and reserve it.
     let l1Fee = 0n
     try {
         const l2 = publicClient.extend(publicActionsL2())
@@ -375,13 +420,7 @@ export async function sweepEoa({ privateKey, chain, destination, rpcOverrides = 
     if (balance <= reserve)
         throw new Error("EOA balance is too low to cover the transfer gas on this chain")
     const value = balance - reserve
-    const hash = await walletClient.sendTransaction({
-        to: destination,
-        value,
-        gas,
-        maxFeePerGas,
-        maxPriorityFeePerGas,
-    })
+    const hash = await walletClient.sendTransaction({ to: destination, value, gas, ...feeFields })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     return { swept: formatEther(value), txHash: hash, success: receipt.status === "success" }
 }
@@ -410,6 +449,15 @@ export async function sweep({ privateKey, chain, destination, rpcOverrides = {} 
         plugins: { sudo: ecdsaValidator }, index: 0n,
     })
 
+    // Refuse chains where the Kernel factory isn't deployed. There the SDK
+    // reconstructs a zero/incorrect sender (e.g. Polygon zkEVM), which would build
+    // a userOp for the wrong account. The offline derivation is the real address.
+    const expected = await kernelAddress(privateKey)
+    if (account.address === zeroAddress || account.address.toLowerCase() !== expected.toLowerCase())
+        throw new Error(
+            `Kernel accounts aren't supported on ${chain.name} (missing factory deployment) — funds here can't be swept with this tool.`,
+        )
+
     // Fees: EIP-1559 where supported, legacy gasPrice otherwise.
     let maxFeePerGas, maxPriorityFeePerGas
     try {
@@ -422,22 +470,38 @@ export async function sweep({ privateKey, chain, destination, rpcOverrides = {} 
         maxPriorityFeePerGas = gp
     }
 
-    // Gas limits: generous fixed values (no bundler to estimate for us). First use
+    // Gas limits (no bundler to estimate for us). Call gas is destination-aware: a
+    // contract-wallet receiver needs far more than an EOA, and a fixed low limit
+    // would revert the transfer while still deploying + charging gas. First use
     // must also pay to deploy the account, so verification gets extra headroom.
+    const destCode = await publicClient.getCode({ address: destination })
+    const callGasLimit = destCode && destCode.length > 2 ? 500_000n : 120_000n
     const code = await publicClient.getCode({ address: account.address })
     const deployed = !!code && code.length > 2
-    const callGasLimit = 120_000n
     const verificationGasLimit = deployed ? 200_000n : 800_000n
     const preVerificationGas = 200_000n
     const maxGasCost =
         (callGasLimit + verificationGasLimit + preVerificationGas) * maxFeePerGas
 
+    // Prefund can come from native balance OR an existing EntryPoint deposit;
+    // account for the deposit so a deposit-funded / near-zero-native account isn't
+    // wrongly rejected.
+    let priorDeposit = 0n
+    try {
+        priorDeposit = await publicClient.readContract({
+            address: entryPoint07Address, abi: entryPoint07Abi,
+            functionName: "balanceOf", args: [account.address],
+        })
+    } catch {
+        // treat as 0
+    }
     const balance = await publicClient.getBalance({ address: account.address })
-    if (balance <= maxGasCost)
+    const needNative = maxGasCost > priorDeposit ? maxGasCost - priorDeposit : 0n
+    if (balance <= needNative)
         throw new Error(
             `Smart-account balance ${formatEther(balance)} is too low to cover the self-submitted sweep gas on this chain`,
         )
-    const value = balance - maxGasCost
+    const value = balance - needNative
 
     // The owner EOA must be able to front the handleOps tx gas.
     const eoaBalance = await publicClient.getBalance({ address: signer.address })
@@ -472,11 +536,12 @@ export async function sweep({ privateKey, chain, destination, rpcOverrides = {} 
     })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     // receipt.status only reflects the OUTER handleOps tx. A userOp can pass
-    // validation yet REVERT in execution (e.g. callGasLimit too low for a contract
-    // destination) while handleOps still succeeds — so decode the EntryPoint's
-    // UserOperationEvent and require its `success` flag before claiming the sweep
-    // landed. If the event can't be found, fall back to the outer status.
-    let opSuccess
+    // validation yet REVERT in execution while handleOps still succeeds — so
+    // authenticate the outcome from the EntryPoint's UserOperationEvent, matched by
+    // sender AND nonce (not sender alone), and require it to be present AND
+    // successful. Missing / mismatched / unrelated evidence is NOT success.
+    let opFound = false
+    let opSuccess = false
     try {
         const events = parseEventLogs({
             abi: entryPoint07Abi,
@@ -484,28 +549,38 @@ export async function sweep({ privateKey, chain, destination, rpcOverrides = {} 
             eventName: "UserOperationEvent",
         })
         const mine = events.find(
-            (e) => e.args.sender?.toLowerCase() === account.address.toLowerCase(),
+            (e) =>
+                e.args.sender?.toLowerCase() === account.address.toLowerCase() &&
+                e.args.nonce === nonce,
         )
-        if (mine) opSuccess = mine.args.success
+        if (mine) {
+            opFound = true
+            opSuccess = mine.args.success === true
+        }
     } catch {
-        // couldn't parse — leave opSuccess undefined and use the outer status
+        // couldn't parse logs — leave unfound (treated as unverified below)
     }
-    const success = receipt.status === "success" && opSuccess !== false
+    const success = receipt.status === "success" && opFound && opSuccess
+    const note =
+        receipt.status === "success" && !opFound
+            ? "Could not find this operation's on-chain event — verify the transaction before assuming funds moved."
+            : undefined
 
-    // The fixed gas limits over-reserve; the unused remainder is refunded to the
-    // account's EntryPoint DEPOSIT (not the destination). Report it so the user
-    // knows funds remain and can reclaim them via EntryPoint.withdrawTo.
-    let stranded = "0"
+    // Residual gas over-reservation is refunded to the account's EntryPoint DEPOSIT
+    // (recoverable via withdrawTo). Report it; a failed read is reported as unknown
+    // (null), never silently zero.
+    let strandedDeposit = null
     try {
-        const dep = await publicClient.readContract({
-            address: entryPoint07Address,
-            abi: entryPoint07Abi,
-            functionName: "balanceOf",
-            args: [account.address],
-        })
-        stranded = formatEther(dep)
+        strandedDeposit = formatEther(
+            await publicClient.readContract({
+                address: entryPoint07Address,
+                abi: entryPoint07Abi,
+                functionName: "balanceOf",
+                args: [account.address],
+            }),
+        )
     } catch {
-        // best-effort — leave "0" if the read fails
+        // leave null = unknown
     }
-    return { swept: formatEther(value), txHash: hash, success, opSuccess, strandedDeposit: stranded }
+    return { swept: formatEther(value), txHash: hash, success, opSuccess, note, strandedDeposit }
 }
