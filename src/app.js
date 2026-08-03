@@ -3,6 +3,7 @@ import {
     scanCandidates,
     sweep,
     sweepEoa,
+    readBalance,
     parseRpcOverrides,
     checksumAddress,
     CHAINS,
@@ -55,9 +56,10 @@ async function onRecover() {
             phraseMode(),
             $("passphrase") ? $("passphrase").value : "",
         )
-        // Keys are now captured in `candidates`; wipe the plaintext DOM copy so a
-        // later script foothold can't read it back off the textarea.
+        // Keys are now captured in `candidates`; wipe the plaintext DOM copies (the
+        // seed AND the passphrase) so a later script foothold can't read them back.
         $("backup").value = ""
+        if ($("passphrase")) $("passphrase").value = ""
         show($("results"))
         setStatus(`Scanning ${candidates.length} derived account(s) across chains…`)
         const balances = await scanCandidates(
@@ -203,6 +205,14 @@ async function onDoSweep() {
                 ),
             )
         result.className = r.success ? "ok" : "err"
+        // Show the account's residual balance afterward — a charged-but-reverted op
+        // or the gas buffer leaves state the original scan no longer reflects.
+        try {
+            const residual = await readBalance(sweepCtx.candidate.address, chain, rpcOverrides)
+            result.appendChild(el("div", "modenote", `Account balance now: ${trim(residual)} ${sym}.`))
+        } catch {
+            // best-effort — skip if the read fails
+        }
         hide($("sweepConfirm"))
         $("doSweep").textContent = "Review sweep"
         pendingConfirm = false

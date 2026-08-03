@@ -145,6 +145,10 @@ export const CHAINS = [
     megaeth, robinhood,
 ]
 
+// OP-stack L2s in our set (they charge a separate L1 data fee). Used to reserve a
+// buffer if the L1 gas oracle can't be read, so an oracle blip can't underfund a tx.
+const OP_STACK = new Set([10, 8453, 204, 57073]) // optimism, base, opBNB, ink
+
 // Parse the "custom RPC" textarea into a { [chainId]: url } map. Each non-empty
 // line is `<chainId or chain name> <url>` (separated by whitespace, `=`, or a
 // comma). Unknown chains are ignored; the name match is case-insensitive.
@@ -374,6 +378,13 @@ export async function scanCandidates(addresses, rpcOverrides = {}) {
     return result
 }
 
+// Read one address's native balance on one chain, formatted in ether. Used to show
+// the residual after a sweep (a charged-but-reverted op / gas buffer changes state).
+export async function readBalance(address, chain, rpcOverrides = {}) {
+    const client = createPublicClient({ chain, transport: rpc(chain, rpcOverrides) })
+    return formatEther(await client.getBalance({ address }))
+}
+
 // Sweep native balance of the OWNER EOA (standard-seed / EOA wallets) to
 // `destination` — a plain transaction the EOA signs itself. No bundler needed.
 export async function sweepEoa({ privateKey, chain, destination, rpcOverrides = {} }) {
@@ -397,24 +408,36 @@ export async function sweepEoa({ privateKey, chain, destination, rpcOverrides = 
         feeFields = { gasPrice: gp }
     }
 
-    // Destination-aware gas: a plain EOA transfer is 21k, but a contract wallet
-    // receiver needs more — a fixed 21k would revert and burn the fee. Estimate,
-    // with headroom, and fall back to 21k if estimation isn't available.
+    // Destination-aware gas. A plain EOA transfer is 21k, but a contract receiver
+    // whose logic scales with the amount can need far more — estimate with the REAL
+    // (near-full) value, not dust, using a state override so the simulation has
+    // headroom to "send" it, then add margin. Fall back to a contract-aware default.
+    const destCode = await publicClient.getCode({ address: destination })
+    const destIsContract = !!destCode && destCode.length > 2
     let gas
     try {
-        gas = ((await publicClient.estimateGas({ account, to: destination, value: 1n })) * 12n) / 10n
+        gas =
+            ((await publicClient.estimateGas({
+                account,
+                to: destination,
+                value: balance,
+                stateOverride: [{ address: account.address, balance: balance * 2n }],
+            })) *
+                12n) /
+            10n
     } catch {
-        gas = 21_000n
+        gas = destIsContract ? 300_000n : 21_000n
     }
     const l2Cost = gas * feePerGas
-    // On OP-stack L2s the sender ALSO pays an L1 data fee not in l2Cost. Estimate
-    // it via the L1 gas oracle (throws → 0 on non-OP chains) and reserve it.
+    // On OP-stack L2s the sender ALSO pays an L1 data fee not in l2Cost. Estimate it
+    // via the L1 gas oracle; if the oracle can't be read on a KNOWN OP-stack chain,
+    // reserve a buffer rather than 0 (an oracle blip must not underfund the tx).
     let l1Fee = 0n
     try {
         const l2 = publicClient.extend(publicActionsL2())
-        l1Fee = await l2.estimateL1Fee({ account, to: destination, value: 1n })
+        l1Fee = await l2.estimateL1Fee({ account, to: destination, value: balance })
     } catch {
-        // not an OP-stack chain / no L1 oracle — no separate L1 fee
+        if (OP_STACK.has(chain.id)) l1Fee = l2Cost * 4n
     }
     const reserve = l2Cost + (l1Fee > 0n ? (l1Fee * 3n) / 2n : 0n)
     if (balance <= reserve)
