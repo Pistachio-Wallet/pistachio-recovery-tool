@@ -92,3 +92,12 @@ Don't trust a hosted link with a real key. Instead:
 
 `npm run bundle` produces both `recovery.html` and its `.sha256`. Hosted mirrors (GitHub Pages,
 IPFS pin) are convenience only; the verified download is what real recoveries should use.
+
+## Live proof — no-bundler sweep on-chain (2026-08-03)
+The smart-account sweep path was proven end-to-end on Base Sepolia using this repo's own
+`sweep()` (no test doubles): a funded Kernel account was deployed AND swept in a single userOp
+submitted by the owner EOA straight to the public EntryPoint v0.7 — **no bundler service**.
+- Swept 0.00499216 ETH; smart account 0.005 → 0; destination received 0.00499216.
+- `handleOps` tx `0xdbc4207f96c63a13ad2667ae75cc72934679da60c8f5d5e8b47ef093207988a6`
+  (Base Sepolia, block 45002407, status success); `UserOperationEvent.success = true`;
+  zero stranded EntryPoint deposit.
