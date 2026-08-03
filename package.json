@@ -1,0 +1,23 @@
+{
+  "name": "pistachio-recovery-tool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/app.js --bundle --format=iife --platform=browser --define:global=globalThis --outfile=src/bundle.js",
+    "bundle": "npm run build && node bundle-single.mjs"
+  },
+  "dependencies": {
+    "@scure/bip32": "1.7.0",
+    "@scure/bip39": "1.6.0",
+    "@zerodev/ecdsa-validator": "5.4.9",
+    "@zerodev/sdk": "5.5.10",
+    "tslib": "2.8.1",
+    "viem": "2.55.10"
+  },
+  "devDependencies": {
+    "buffer": "6.0.3",
+    "esbuild": "0.28.1",
+    "events": "3.3.0"
+  }
+}
