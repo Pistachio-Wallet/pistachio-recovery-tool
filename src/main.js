@@ -278,18 +278,20 @@ export async function deriveCandidates(input, phraseMode = "pistachio", passphra
 
     // Standard BIP-39 HD interpretation (MetaMask + Ledger paths, accounts 0..4),
     // honoring the optional BIP-39 passphrase. i=0 on both paths is the same key
-    // (deduped). The first account also gets its Kernel candidate, so a smart
-    // account owned by the seed's main EOA is discoverable too.
+    // (deduped). EVERY enumerated account also gets its Kernel candidate — a smart
+    // account can be owned by any HD-path EOA, and offline derivation is cheap, so
+    // we don't want a Kernel on account N > 0 to go unscanned.
     const stdPrimary = phraseMode === "standard" || words !== 24
-    const acct0Key = hdKeyAtPath(p, "m/44'/60'/0'/0/0", passphrase)
     for (let i = 0; i < HD_ACCOUNTS; i++) {
-        addEoa(hdKeyAtPath(p, `m/44'/60'/0'/0/${i}`, passphrase),
-            `Standard seed · account ${i}`, `m/44'/60'/0'/0/${i}`, stdPrimary && i === 0)
-        addEoa(hdKeyAtPath(p, `m/44'/60'/${i}'/0/0`, passphrase),
-            `Ledger · account ${i}`, `m/44'/60'/${i}'/0/0`, false)
+        for (const [label, path] of [
+            [`Standard seed · account ${i}`, `m/44'/60'/0'/0/${i}`],
+            [`Ledger · account ${i}`, `m/44'/60'/${i}'/0/0`],
+        ]) {
+            const key = hdKeyAtPath(p, path, passphrase)
+            addEoa(key, label, path, stdPrimary && path === "m/44'/60'/0'/0/0")
+            await addKernel(key, `${label} · Kernel`, "Smart account owned by this path", false)
+        }
     }
-    await addKernel(acct0Key, "Standard seed · account 0 · Kernel",
-        "Smart account owned by your first account", false)
     return out
 }
 
@@ -393,18 +395,20 @@ export async function sweepEoa({ privateKey, chain, destination, rpcOverrides = 
     const walletClient = createWalletClient({ account, chain, transport: rpc(chain, rpcOverrides) })
     const balance = await publicClient.getBalance({ address: account.address })
 
-    // Fees: EIP-1559 where supported, LEGACY (type-0, gasPrice) otherwise — the
-    // fallback must actually sign a legacy tx, not a type-2 tx with gasPrice copied
-    // into the 1559 fields (that gets rejected by legacy-only nodes).
+    // Fees: EIP-1559 where supported, LEGACY (type-0, gasPrice) otherwise. Detect
+    // which from the chain's own latest block — `estimateFeesPerGas()` can RESOLVE
+    // (not throw) on a legacy chain, so a try/catch isn't enough; a block with no
+    // baseFeePerGas is pre-1559 and must be signed as a legacy (gasPrice) tx.
     let feePerGas, feeFields
-    try {
-        const e = await publicClient.estimateFeesPerGas()
-        feePerGas = e.maxFeePerGas
-        feeFields = { maxFeePerGas: e.maxFeePerGas, maxPriorityFeePerGas: e.maxPriorityFeePerGas }
-    } catch {
+    const latest = await publicClient.getBlock()
+    if (latest.baseFeePerGas == null) {
         const gp = await publicClient.getGasPrice()
         feePerGas = gp
         feeFields = { gasPrice: gp }
+    } else {
+        const e = await publicClient.estimateFeesPerGas()
+        feePerGas = e.maxFeePerGas
+        feeFields = { maxFeePerGas: e.maxFeePerGas, maxPriorityFeePerGas: e.maxPriorityFeePerGas }
     }
 
     // Destination-aware gas. A plain EOA transfer is 21k, but a contract receiver
@@ -436,7 +440,14 @@ export async function sweepEoa({ privateKey, chain, destination, rpcOverrides = 
         const l2 = publicClient.extend(publicActionsL2())
         l1Fee = await l2.estimateL1Fee({ account, to: destination, value: balance })
     } catch {
-        if (OP_STACK.has(chain.id)) l1Fee = l2Cost * 4n
+        // Oracle unavailable on a known OP-stack chain: reserve a buffer with an
+        // absolute floor (0.0001 native) so the reserve doesn't collapse when the
+        // L2 gas price is tiny — the L1 fee is independent of the L2 gas price.
+        if (OP_STACK.has(chain.id)) {
+            const FLOOR = 100_000_000_000_000n // 0.0001 native
+            const coupled = l2Cost * 4n
+            l1Fee = coupled > FLOOR ? coupled : FLOOR
+        }
     }
     const reserve = l2Cost + (l1Fee > 0n ? (l1Fee * 3n) / 2n : 0n)
     if (balance <= reserve)
