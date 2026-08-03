@@ -39,7 +39,6 @@ import {
     mantle,
     scroll,
     opBNB,
-    polygonZkEvm,
     ink,
     bsc,
     hyperliquid,
@@ -141,7 +140,7 @@ export { normalizePrivateKey }
 // the tool keeps working after we're gone.
 export const CHAINS = [
     mainnet, optimism, polygon, arbitrum, base, plumeMainnet, mantle, scroll,
-    opBNB, polygonZkEvm, ink, bsc, hyperliquid, celo, linea, monad,
+    opBNB, ink, bsc, hyperliquid, celo, linea, monad,
     megaeth, robinhood,
 ]
 
