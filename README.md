@@ -1,5 +1,10 @@
 # Pistachio recovery tool (Layer 2 of sovereign exit)
 
+> ⚠️ **Unaudited prototype. Do not use it with significant funds.**
+> This tool has not had a security audit. The only live sweep so far ran on a testnet (Base Sepolia).
+> It moves native tokens only (ERC-20 tokens are not swept yet) and finds ZeroDev Kernel v3.0 smart
+> accounts only. Test with a small amount first, and never paste a key into a hosted copy you have not verified.
+
 Standalone, offline-capable static page: paste your Pistachio backup (raw private
 key OR 24-word recovery phrase) → recompute the smart-account address your funds
 live at → scan native balances across all supported EVM chains → sweep to an
